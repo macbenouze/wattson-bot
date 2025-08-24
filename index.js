@@ -2,7 +2,7 @@
 // -----------------------------------------------------------------------------
 // Wattson — Intervenant conseils pratiques (temps, récup, psycho, diététique)
 // LLM : Gemini (API Google) + RAG PDF (rag_gemini.js, optionnel)
-// Commandes : !ping, !profil (set/show), !conseil, !ask, !doc add, !doc ask
+// Commandes : !ping, !profil (set/show), !conseil, !ask, !doc add, !doc ask, !ai test
 // NOTE : Les commandes de plans/séances sont désactivées (redirigées vers le Coach).
 // -----------------------------------------------------------------------------
 
@@ -27,7 +27,7 @@ try {
 const BOT_PROFILE = {
   name: 'Wattson',
   role: "intervenant en préparation et hygiène de vie pour triathlètes amateurs",
-  audience: "triathlètes amateurs avec vie pro/familiale chargée",
+  audience: "triathlètes amateurs avec vie pro/famille chargée",
   tone: "chaleureux, motivant, rassurant, concret",
   language: "français",
   style: "structuré, clair, puces et tableaux si utile",
@@ -171,7 +171,7 @@ client.once(Events.ClientReady, (c)=>{
   const guilds = [...c.guilds.cache.values()].map(g=>`${g.name} (${g.id})`);
   console.log(`✅ Connecté en tant que ${c.user.tag} | Guilds: ${guilds.length} -> ${guilds.join(', ') || 'aucune'}`);
   if(!process.env.DISCORD_BOT_TOKEN) console.warn('⚠️ DISCORD_BOT_TOKEN manquant');
-  if(!process.env.GEMINI_API_KEY) console.warn('ℹ️ GEMINI_API_KEY manquant : !ask/!conseil/!doc ask échoueront.');
+  if(!process.env.GEMINI_API_KEY) console.warn('ℹ️ GEMINI_API_KEY manquant : !ask/!conseil/!doc ask/!ai test échoueront.');
 });
 
 // =============================== MESSAGE LOOP ================================
@@ -193,6 +193,36 @@ client.on(Events.MessageCreate, async (message) => {
     if (content.toLowerCase() === '!ping') {
       markResponded(message.id);
       return void message.reply('pong 🏓');
+    }
+
+    // --- !ai test ------------------------------------------------------------
+    if (content.toLowerCase() === '!ai test') {
+      markResponded(message.id);
+      await message.channel.sendTyping();
+      try {
+        // 1) test génération
+        const sys = "Tu es un test automatique. Réponds uniquement par 'OK'.";
+        const gen = await callLLM(sys, 'ping', { max_tokens: 5, temperature: 0.1 });
+
+        // 2) test embeddings (utile pour RAG)
+        let embInfo = 'skip';
+        try {
+          const ai = await getGemini();
+          const r = await ai.models.embedContent({
+            model: 'gemini-embedding-001',
+            contents: ['test embedding'],
+          });
+          const len = r?.embeddings?.[0]?.values?.length || r?.embedding?.values?.length || 0;
+          embInfo = typeof len === 'number' && len > 0 ? `${len}` : 'unknown';
+        } catch (e) {
+          embInfo = 'error: ' + (e.message || e);
+        }
+
+        return void message.reply(`✅ Gemini OK: "${(gen||'').trim()}" | embeddings: ${embInfo}`);
+      } catch (e) {
+        console.error('!ai test error', e);
+        return void message.reply(`❌ Gemini KO: ${(e.message||e).toString().slice(0,300)}`);
+      }
     }
 
     // !profil
@@ -351,7 +381,19 @@ Exigences :
 // Si tu es en "Background Worker", commente/supprime ce bloc.
 const express = require('express');
 const app = express();
+
 app.get('/', (_, res) => res.send('ok'));
+
+// --- Route de santé pour Gemini ---------------------------------------------
+app.get('/health/ai', async (_, res) => {
+  try {
+    const out = await callLLM("Tu es un test. Réponds 'OK'.", "ping", { max_tokens: 5, temperature: 0.1 });
+    res.json({ ok: true, reply: (out||'').trim() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message || String(e) });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log('HTTP up on', PORT));
 
@@ -361,3 +403,4 @@ process.on('uncaughtException', (e) => console.error('UNCAUGHT EXCEPTION:', e));
 
 // ================================= START =====================================
 client.login(process.env.DISCORD_BOT_TOKEN);
+
