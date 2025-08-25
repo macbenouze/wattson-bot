@@ -120,28 +120,33 @@ function sanitizeIfWorkout(ans){
 }
 
 // ================================ GEMINI (LLM) ===============================
-let _gemini=null;
-async function getGemini(){
-  if(_gemini) return _gemini;
+// Client paresseux : tente @google/genai, sinon @google/generative-ai
+let _gemini = null;
+async function getGemini() {
+  if (_gemini) return _gemini;
   try {
     const { GoogleGenAI } = await import('@google/genai');
     _gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    _gemini._flavor='genai';
+    _gemini._flavor = 'genai';
   } catch {
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     _gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    _gemini._flavor='generative-ai';
+    _gemini._flavor = 'generative-ai';
   }
   return _gemini;
 }
 
-// --- Extraction robuste du texte Gemini -------------------------------------
+// --- Extraction robuste du texte Gemini (toutes formes possibles) -----------
 async function extractText(resp) {
   try {
+    // Nouveau SDK (@google/genai)
     if (typeof resp?.text === 'function') return (await resp.text())?.trim();
-    if (typeof resp?.text === 'string') return resp.text.trim();
+    if (typeof resp?.text === 'string')   return resp.text.trim();
+
+    // Ancien SDK (@google/generative-ai)
     if (typeof resp?.response?.text === 'function') return (await resp.response.text())?.trim();
 
+    // Candidats/parts (formes bas niveau)
     const cand = resp?.response?.candidates || resp?.candidates || [];
     if (Array.isArray(cand) && cand.length) {
       const joined = cand
@@ -152,39 +157,72 @@ async function extractText(resp) {
       if (joined) return joined;
     }
 
+    // Autres sorties possibles
     const output = resp?.output || resp?.response?.output || [];
     if (Array.isArray(output) && output[0]?.content?.parts?.length) {
       const t = output[0].content.parts.map(p => p.text || '').join('').trim();
       if (t) return t;
     }
-  } catch (_) {}
+  } catch {}
   return null;
 }
 
-async function callLLM(system, user, params={}){
+// --- Essai avec le nouveau SDK (@google/genai) -------------------------------
+async function tryGenAI(system, user, params) {
   const ai = await getGemini();
-  const modelName = params.model || MODEL_DEFAULTS.model;
-  const temperature = params.temperature ?? MODEL_DEFAULTS.temperature;
-  const maxOutputTokens = params.max_tokens ?? MODEL_DEFAULTS.max_tokens;
+  if (ai._flavor !== 'genai') throw new Error('not genai');
 
-  if (ai._flavor==='genai'){
-    const resp = await ai.models.generateContent({
-      model: modelName,
-      contents:[{ role:'user', parts:[{ text:user }]}],
-      systemInstruction:{ parts:[{ text:system }] },
-      config:{ temperature, maxOutputTokens },
-    });
-    const text = await extractText(resp);
-    return text || "OK";
-  } else {
-    const model = ai.getGenerativeModel({ model: modelName, systemInstruction: system });
-    const resp = await model.generateContent({
-      contents:[{ role:'user', parts:[{ text:user }]}],
-      generationConfig:{ temperature, maxOutputTokens },
-    });
-    const text = await extractText(resp);
-    return text || "OK";
+  const modelName = params.model || MODEL_DEFAULTS.model;
+  const resp = await ai.models.generateContent({
+    model: modelName,
+    contents: [{ role: 'user', parts: [{ text: user }]}],
+    systemInstruction: { parts: [{ text: system }] },
+    config: {
+      temperature: params.temperature ?? MODEL_DEFAULTS.temperature,
+      maxOutputTokens: params.max_tokens ?? MODEL_DEFAULTS.max_tokens,
+    },
+  });
+  return await extractText(resp);
+}
+
+// --- Fallback avec l’ancien SDK (@google/generative-ai) ----------------------
+async function tryOldSDK(system, user, params) {
+  const { GoogleGenerativeAI } = await import('@google/generative-ai');
+  const ai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+  const modelName = params.model || MODEL_DEFAULTS.model;
+  const model = ai.getGenerativeModel({ model: modelName, systemInstruction: system });
+  const resp = await model.generateContent({
+    contents: [{ role: 'user', parts: [{ text: user }]}],
+    generationConfig: {
+      temperature: params.temperature ?? MODEL_DEFAULTS.temperature,
+      maxOutputTokens: params.max_tokens ?? MODEL_DEFAULTS.max_tokens,
+    },
+  });
+  return await extractText(resp);
+}
+
+// --- Wrapper robuste : genai -> fallback generative-ai -----------------------
+// Note: pour !ai test, passe { fallbackOK: true } pour renvoyer "OK" si texte vide.
+async function callLLM(system, user, params = {}) {
+  // 1) Nouveau SDK
+  try {
+    const t = await tryGenAI(system, user, params);
+    if (t && t.trim()) return t.trim();
+  } catch {
+    // on tentera le fallback
   }
+
+  // 2) Ancien SDK (fallback)
+  try {
+    const t2 = await tryOldSDK(system, user, params);
+    if (t2 && t2.trim()) return t2.trim();
+  } catch (e) {
+    console.error('Gemini both SDKs failed:', e);
+  }
+
+  // 3) Rien de recevable : "OK" uniquement pour le test, sinon message clair
+  return params.fallbackOK ? "OK" : "Désolé, je n'ai pas pu générer de réponse pour l’instant.";
 }
 
 // ================================= DISCORD ===================================
@@ -224,36 +262,40 @@ client.on(Events.MessageCreate, async (message) => {
       return void message.reply('pong 🏓');
     }
 
-    // --- !ai test ------------------------------------------------------------
-    if (content.toLowerCase() === '!ai test') {
-      markResponded(message.id);
-      await message.channel.sendTyping();
-      try {
-        // 1) test génération
-        const sys = "Tu es un test automatique. Réponds uniquement par 'OK'.";
-        const gen = await callLLM(sys, 'ping', { max_tokens: 5, temperature: 0.1 });
+    // --- !ai test ---------------------------------------------------------------
+if (content.toLowerCase() === '!ai test') {
+  markResponded(message.id);
+  await message.channel.sendTyping();
+  try {
+    // 1) Test génération (réponse attendue: "OK")
+    const sys = "Tu es un test automatique. Réponds uniquement par 'OK'.";
+    const gen = await callLLM(sys, 'ping', {
+      max_tokens: 5,
+      temperature: 0.1,
+      fallbackOK: true, // ← OK seulement pour ce test
+    });
 
-        // 2) test embeddings (utile pour RAG) — dimension fixée à 768
-        let embInfo = 'skip';
-        try {
-          const ai = await getGemini();
-          const r = await ai.models.embedContent({
-            model: 'gemini-embedding-001',
-            contents: ['test embedding'],
-            config: { outputDimensionality: 768 }
-          });
-          const len = r?.embeddings?.[0]?.values?.length || r?.embedding?.values?.length || 0;
-          embInfo = typeof len === 'number' && len > 0 ? `${len}` : 'unknown';
-        } catch (e) {
-          embInfo = 'error: ' + (e.message || e);
-        }
-
-        return void message.reply(`✅ Gemini OK: "${(gen||'').trim()}" | embeddings: ${embInfo}`);
-      } catch (e) {
-        console.error('!ai test error', e);
-        return void message.reply(`❌ Gemini KO: ${(e.message||e).toString().slice(0,300)}`);
-      }
+    // 2) Test embeddings (utile pour RAG) — dimension fixée à 768
+    let embInfo = 'skip';
+    try {
+      const ai = await getGemini();
+      const r = await ai.models.embedContent({
+        model: 'gemini-embedding-001',
+        contents: ['test embedding'],
+        config: { outputDimensionality: 768 },
+      });
+      const len = r?.embeddings?.[0]?.values?.length || r?.embedding?.values?.length || 0;
+      embInfo = len ? String(len) : 'unknown';
+    } catch (e) {
+      embInfo = 'error: ' + (e.message || String(e));
     }
+
+    return void message.reply(`✅ Gemini OK: "${(gen || '').trim()}" | embeddings: ${embInfo}`);
+  } catch (e) {
+    console.error('!ai test error', e);
+    return void message.reply(`❌ Gemini KO: ${(e.message || e).toString().slice(0, 300)}`);
+  }
+}
 
     // !profil
     if (content.toLowerCase().startsWith('!profil')) {
