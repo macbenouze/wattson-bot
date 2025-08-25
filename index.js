@@ -15,6 +15,51 @@ const {
   PermissionsBitField,
 } = require('discord.js');
 
+// --- RAG storage helpers -----------------------------------------------------
+const fs = require('fs');
+const path = require('path');
+
+// Dossier de stockage RAG (persiste en prod avec un Volume Railway)
+const DATA_DIR = process.env.RAG_DATA_DIR || path.join(process.cwd(), 'data');
+
+/**
+ * Retourne des stats sur l'index RAG.
+ * - docs.json : liste des PDF ingérés
+ * - index.jsonl : 1 ligne = 1 chunk indexé
+ */
+async function getRagStats() {
+  try {
+    const docsPath = path.join(DATA_DIR, 'docs.json');
+    const idxPath  = path.join(DATA_DIR, 'index.jsonl');
+
+    let docs = [];
+    if (fs.existsSync(docsPath)) {
+      const raw = JSON.parse(fs.readFileSync(docsPath, 'utf-8'));
+      docs = Array.isArray(raw) ? raw : (raw.docs || []);
+    }
+
+    let chunks = 0;
+    if (fs.existsSync(idxPath)) {
+      const content = fs.readFileSync(idxPath, 'utf-8');
+      chunks = content ? content.split('\n').filter(Boolean).length : 0;
+    }
+
+    const sizeIdxBytes = fs.existsSync(idxPath) ? fs.statSync(idxPath).size : 0;
+    const sizeDocsBytes = fs.existsSync(docsPath) ? fs.statSync(docsPath).size : 0;
+    const sizeMB = ((sizeIdxBytes + sizeDocsBytes) / (1024 * 1024));
+
+    return {
+      dataDir: DATA_DIR,
+      docsCount: docs.length,
+      chunks,
+      sizeMB: Number(sizeMB.toFixed(2)),
+      docNames: docs.map(d => d.name || d.file || String(d)).slice(0, 20), // liste (max 20)
+    };
+  } catch (e) {
+    return { error: e.message || String(e) };
+  }
+}
+
 // ===== RAG (si présent) ======================================================
 let rag = null;
 try {
@@ -446,6 +491,37 @@ Exigences :
   } catch (err) {
     console.error('❌ Erreur messageCreate:', err);
   }
+
+// --- !doc status -------------------------------------------------------------
+if (content.toLowerCase().startsWith('!doc status')) {
+  markResponded(message.id);
+  await message.channel.sendTyping();
+
+  // mode verbeux si "!doc status -v"
+  const verbose = /\s-v\b/i.test(content);
+
+  const stats = await getRagStats();
+  if (stats.error) {
+    return void message.reply(`❌ Impossible de lire le store RAG: ${stats.error}`);
+  }
+
+  const lines = [
+    `📚 **RAG store** : \`${stats.dataDir}\``,
+    `• Documents : **${stats.docsCount}**`,
+    `• Chunks indexés : **${stats.chunks}**`,
+    `• Taille totale (approx.) : **${stats.sizeMB} Mo**`,
+  ];
+
+  if (verbose && stats.docNames?.length) {
+    lines.push(`• Docs (max 20) :\n${stats.docNames.map((n,i)=>`  ${i+1}. ${n}`).join('\n')}`);
+  } else if (stats.docNames?.length) {
+    lines.push(`• Premier doc : **${stats.docNames[0]}**${stats.docsCount>1 ? ` (+${stats.docsCount-1} autres)` : ''}`);
+    lines.push(`Astuce : \`!doc status -v\` pour la liste.`);
+  }
+
+  return void message.reply(lines.join('\n'));
+}
+
 });
 
 // ============================== EXPRESS (WEB) ================================
