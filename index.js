@@ -300,7 +300,7 @@ Exigences :
       try {
         let answer = await callLLM(system, user, { max_tokens: 900, temperature: 0.35 });
         answer = sanitizeIfWorkout(answer);
-        return answer.length<=1900 ? message.reply(answer) : (await message.reply("Réponse longue ▶️"), sendInChunks(message.channel, answer));
+        return answer.length<=1900 ? message.reply(answer) : (await message.reply("Réponse longue ▶"), sendInChunks(message.channel, answer));
       } catch (e) {
         console.error('!conseil error', e);
         return void message.reply("Oups, impossible de formuler les conseils. Réessaie.");
@@ -351,7 +351,7 @@ Exigences :
         let answer = await callLLM(system, question, { max_tokens: 900, temperature: 0.35 });
         answer = sanitizeIfWorkout(answer);
         const out = answer + `\n\nSources: ${sources.map(s => `«${s}»`).join(', ')}`;
-        return out.length<=1900 ? message.reply(out) : (await message.reply("Réponse longue ▶️"), sendInChunks(message.channel, out));
+        return out.length<=1900 ? message.reply(out) : (await message.reply("Réponse longue ▶"), sendInChunks(message.channel, out));
       } catch (e) {
         console.error('!doc ask error', e);
         return void message.reply("Oups, recherche/raisonnement échoués.");
@@ -384,7 +384,7 @@ Exigences :
       try {
         let answer = await callLLM(system, question, params);
         answer = sanitizeIfWorkout(answer);
-        return answer.length<=1900 ? message.reply(answer) : (await message.reply("Réponse longue ▶️"), sendInChunks(message.channel, answer));
+        return answer.length<=1900 ? message.reply(answer) : (await message.reply("Réponse longue ▶"), sendInChunks(message.channel, answer));
       } catch (err) {
         console.error('❌ Erreur Gemini:', err);
         return void message.reply("Oups, une erreur est survenue. Réessaie.");
@@ -433,5 +433,3 @@ process.on('uncaughtException', (e) => console.error('UNCAUGHT EXCEPTION:', e));
 
 // ================================= START =====================================
 client.login(process.env.DISCORD_BOT_TOKEN);
-
-
