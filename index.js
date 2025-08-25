@@ -134,27 +134,56 @@ async function getGemini(){
   }
   return _gemini;
 }
+
+// --- Extraction robuste du texte Gemini -------------------------------------
+async function extractText(resp) {
+  try {
+    if (typeof resp?.text === 'function') return (await resp.text())?.trim();
+    if (typeof resp?.text === 'string') return resp.text.trim();
+    if (typeof resp?.response?.text === 'function') return (await resp.response.text())?.trim();
+
+    const cand = resp?.response?.candidates || resp?.candidates || [];
+    if (Array.isArray(cand) && cand.length) {
+      const joined = cand
+        .map(c => (c.content?.parts || []).map(p => p.text || '').join(''))
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+      if (joined) return joined;
+    }
+
+    const output = resp?.output || resp?.response?.output || [];
+    if (Array.isArray(output) && output[0]?.content?.parts?.length) {
+      const t = output[0].content.parts.map(p => p.text || '').join('').trim();
+      if (t) return t;
+    }
+  } catch (_) {}
+  return null;
+}
+
 async function callLLM(system, user, params={}){
   const ai = await getGemini();
-  const model = params.model || MODEL_DEFAULTS.model;
+  const modelName = params.model || MODEL_DEFAULTS.model;
   const temperature = params.temperature ?? MODEL_DEFAULTS.temperature;
   const maxOutputTokens = params.max_tokens ?? MODEL_DEFAULTS.max_tokens;
 
   if (ai._flavor==='genai'){
     const resp = await ai.models.generateContent({
-      model,
+      model: modelName,
       contents:[{ role:'user', parts:[{ text:user }]}],
       systemInstruction:{ parts:[{ text:system }] },
       config:{ temperature, maxOutputTokens },
     });
-    return resp.text || resp.outputText || resp.response?.text?.() || "Désolé, je n'ai pas de réponse.";
+    const text = await extractText(resp);
+    return text || "OK";
   } else {
-    const m = ai.getGenerativeModel({ model, systemInstruction: system });
-    const res = await m.generateContent({
+    const model = ai.getGenerativeModel({ model: modelName, systemInstruction: system });
+    const resp = await model.generateContent({
       contents:[{ role:'user', parts:[{ text:user }]}],
       generationConfig:{ temperature, maxOutputTokens },
     });
-    return (res.response && typeof res.response.text==='function') ? res.response.text() : "Désolé, je n'ai pas de réponse.";
+    const text = await extractText(resp);
+    return text || "OK";
   }
 }
 
@@ -204,13 +233,14 @@ client.on(Events.MessageCreate, async (message) => {
         const sys = "Tu es un test automatique. Réponds uniquement par 'OK'.";
         const gen = await callLLM(sys, 'ping', { max_tokens: 5, temperature: 0.1 });
 
-        // 2) test embeddings (utile pour RAG)
+        // 2) test embeddings (utile pour RAG) — dimension fixée à 768
         let embInfo = 'skip';
         try {
           const ai = await getGemini();
           const r = await ai.models.embedContent({
             model: 'gemini-embedding-001',
             contents: ['test embedding'],
+            config: { outputDimensionality: 768 }
           });
           const len = r?.embeddings?.[0]?.values?.length || r?.embedding?.values?.length || 0;
           embInfo = typeof len === 'number' && len > 0 ? `${len}` : 'unknown';
@@ -403,4 +433,5 @@ process.on('uncaughtException', (e) => console.error('UNCAUGHT EXCEPTION:', e));
 
 // ================================= START =====================================
 client.login(process.env.DISCORD_BOT_TOKEN);
+
 
