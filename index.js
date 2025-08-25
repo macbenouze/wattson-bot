@@ -177,7 +177,7 @@ async function tryGenAI(system, user, params) {
     model: modelName,
     contents: [{ role: 'user', parts: [{ text: user }]}],
     systemInstruction: { parts: [{ text: system }] },
-    config: {
+    generationConfig: {                               // ⬅️ important
       temperature: params.temperature ?? MODEL_DEFAULTS.temperature,
       maxOutputTokens: params.max_tokens ?? MODEL_DEFAULTS.max_tokens,
     },
@@ -194,7 +194,7 @@ async function tryOldSDK(system, user, params) {
   const model = ai.getGenerativeModel({ model: modelName, systemInstruction: system });
   const resp = await model.generateContent({
     contents: [{ role: 'user', parts: [{ text: user }]}],
-    generationConfig: {
+    generationConfig: {                               // ⬅️ déjà le bon champ
       temperature: params.temperature ?? MODEL_DEFAULTS.temperature,
       maxOutputTokens: params.max_tokens ?? MODEL_DEFAULTS.max_tokens,
     },
