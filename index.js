@@ -2,8 +2,9 @@
 // -----------------------------------------------------------------------------
 // Wattson — Intervenant conseils pratiques (temps, récup, psycho, diététique)
 // LLM : Gemini (API Google) + RAG PDF (rag_gemini.js, optionnel)
-// Commandes : !ping, !profil (set/show), !conseil, !ask, !doc add, !doc ask, !ai test
-// NOTE : Les commandes de plans/séances sont désactivées (redirigées vers le Coach).
+// Commandes : !ping, !profil (set/show), !conseil, !ask, !doc add, !doc ask,
+//             !doc status, !ai test
+// NOTE : Les séances/plans restent du ressort du Coach.
 // -----------------------------------------------------------------------------
 
 require('dotenv').config();
@@ -19,7 +20,7 @@ const {
 const fs = require('fs');
 const path = require('path');
 
-// Dossier de stockage RAG (persiste en prod avec un Volume Railway)
+// Dossier de stockage RAG (persiste en prod via un Volume Railway)
 const DATA_DIR = process.env.RAG_DATA_DIR || path.join(process.cwd(), 'data');
 
 /**
@@ -93,7 +94,7 @@ const SUPPORT_CHECKLIST = `
 - Vie pro/famille : communication, créneaux négociés, logistique minimaliste.
 `.trim();
 
-// LLM par défaut
+// LLM par défaut (tu peux passer à 'gemini-1.5-flash' si besoin de stabilité)
 const MODEL_DEFAULTS = { model: 'gemini-2.5-flash', temperature: 0.35, max_tokens: 900 };
 // Presets (si besoin): par salon / par rôle
 const CHANNEL_PRESETS = {}, ROLE_PRESETS = {};
@@ -135,7 +136,7 @@ function parseKVs(str){ const kv={}, re=/(\w+)\s*=\s*([^\s]+)/g; let m; while((m
 function setAthlete(uid, kv){ const cur=ATHLETES.get(uid)||{}; ATHLETES.set(uid,{...cur,...kv}); }
 function getAthlete(uid){ return ATHLETES.get(uid)||null; }
 
-// ============================ PROMPTS SUPPORT =================================
+// ============================ PROMPTS SUPPORT ================================
 function buildSupportSystemPrompt(ctx){
   const base = [
     `Tu es "${BOT_PROFILE.name}", ${BOT_PROFILE.role}.`,
@@ -222,7 +223,7 @@ async function tryGenAI(system, user, params) {
     model: modelName,
     contents: [{ role: 'user', parts: [{ text: user }]}],
     systemInstruction: { parts: [{ text: system }] },
-    generationConfig: {                               // ⬅️ important
+    generationConfig: {
       temperature: params.temperature ?? MODEL_DEFAULTS.temperature,
       maxOutputTokens: params.max_tokens ?? MODEL_DEFAULTS.max_tokens,
     },
@@ -239,7 +240,7 @@ async function tryOldSDK(system, user, params) {
   const model = ai.getGenerativeModel({ model: modelName, systemInstruction: system });
   const resp = await model.generateContent({
     contents: [{ role: 'user', parts: [{ text: user }]}],
-    generationConfig: {                               // ⬅️ déjà le bon champ
+    generationConfig: {
       temperature: params.temperature ?? MODEL_DEFAULTS.temperature,
       maxOutputTokens: params.max_tokens ?? MODEL_DEFAULTS.max_tokens,
     },
@@ -248,7 +249,6 @@ async function tryOldSDK(system, user, params) {
 }
 
 // --- Wrapper robuste : genai -> fallback generative-ai -----------------------
-// Note: pour !ai test, passe { fallbackOK: true } pour renvoyer "OK" si texte vide.
 async function callLLM(system, user, params = {}) {
   // 1) Nouveau SDK
   try {
@@ -266,7 +266,7 @@ async function callLLM(system, user, params = {}) {
     console.error('Gemini both SDKs failed:', e);
   }
 
-  // 3) Rien de recevable : "OK" uniquement pour le test, sinon message clair
+  // 3) Rien de recevable
   return params.fallbackOK ? "OK" : "Désolé, je n'ai pas pu générer de réponse pour l’instant.";
 }
 
@@ -307,40 +307,40 @@ client.on(Events.MessageCreate, async (message) => {
       return void message.reply('pong 🏓');
     }
 
-    // --- !ai test ---------------------------------------------------------------
-if (content.toLowerCase() === '!ai test') {
-  markResponded(message.id);
-  await message.channel.sendTyping();
-  try {
-    // 1) Test génération (réponse attendue: "OK")
-    const sys = "Tu es un test automatique. Réponds uniquement par 'OK'.";
-    const gen = await callLLM(sys, 'ping', {
-      max_tokens: 5,
-      temperature: 0.1,
-      fallbackOK: true, // ← OK seulement pour ce test
-    });
+    // --- !ai test ------------------------------------------------------------
+    if (content.toLowerCase() === '!ai test') {
+      markResponded(message.id);
+      await message.channel.sendTyping();
+      try {
+        // 1) Test génération (réponse attendue: "OK")
+        const sys = "Tu es un test automatique. Réponds uniquement par 'OK'.";
+        const gen = await callLLM(sys, 'ping', {
+          max_tokens: 5,
+          temperature: 0.1,
+          fallbackOK: true, // OK seulement pour ce test
+        });
 
-    // 2) Test embeddings (utile pour RAG) — dimension fixée à 768
-    let embInfo = 'skip';
-    try {
-      const ai = await getGemini();
-      const r = await ai.models.embedContent({
-        model: 'gemini-embedding-001',
-        contents: ['test embedding'],
-        config: { outputDimensionality: 768 },
-      });
-      const len = r?.embeddings?.[0]?.values?.length || r?.embedding?.values?.length || 0;
-      embInfo = len ? String(len) : 'unknown';
-    } catch (e) {
-      embInfo = 'error: ' + (e.message || String(e));
+        // 2) Test embeddings (utile pour RAG) — dimension fixée à 768
+        let embInfo = 'skip';
+        try {
+          const ai = await getGemini();
+          const r = await ai.models.embedContent({
+            model: 'gemini-embedding-001',
+            contents: ['test embedding'],
+            config: { outputDimensionality: 768 },
+          });
+          const len = r?.embeddings?.[0]?.values?.length || r?.embedding?.values?.length || 0;
+          embInfo = len ? String(len) : 'unknown';
+        } catch (e) {
+          embInfo = 'error: ' + (e.message || String(e));
+        }
+
+        return void message.reply(`✅ Gemini OK: "${(gen || '').trim()}" | embeddings: ${embInfo}`);
+      } catch (e) {
+        console.error('!ai test error', e);
+        return void message.reply(`❌ Gemini KO: ${(e.message || e).toString().slice(0, 300)}`);
+      }
     }
-
-    return void message.reply(`✅ Gemini OK: "${(gen || '').trim()}" | embeddings: ${embInfo}`);
-  } catch (e) {
-    console.error('!ai test error', e);
-    return void message.reply(`❌ Gemini KO: ${(e.message || e).toString().slice(0, 300)}`);
-  }
-}
 
     // !profil
     if (content.toLowerCase().startsWith('!profil')) {
@@ -387,11 +387,39 @@ Exigences :
       try {
         let answer = await callLLM(system, user, { max_tokens: 900, temperature: 0.35 });
         answer = sanitizeIfWorkout(answer);
-        return answer.length<=1900 ? message.reply(answer) : (await message.reply("Réponse longue ▶"), sendInChunks(message.channel, answer));
+        return answer.length<=1900 ? message.reply(answer) : (await message.reply("Réponse longue ▶️"), sendInChunks(message.channel, answer));
       } catch (e) {
         console.error('!conseil error', e);
         return void message.reply("Oups, impossible de formuler les conseils. Réessaie.");
       }
+    }
+
+    // --- !doc status ---------------------------------------------------------
+    if (content.toLowerCase().startsWith('!doc status')) {
+      markResponded(message.id);
+      await message.channel.sendTyping();
+
+      const verbose = /\s-v\b/i.test(content);
+      const stats = await getRagStats();
+      if (stats.error) {
+        return void message.reply(`❌ Impossible de lire le store RAG: ${stats.error}`);
+      }
+
+      const lines = [
+        `📚 **RAG store** : \`${stats.dataDir}\``,
+        `• Documents : **${stats.docsCount}**`,
+        `• Chunks indexés : **${stats.chunks}**`,
+        `• Taille totale (approx.) : **${stats.sizeMB} Mo**`,
+      ];
+
+      if (verbose && stats.docNames?.length) {
+        lines.push(`• Docs (max 20) :\n${stats.docNames.map((n,i)=>`  ${i+1}. ${n}`).join('\n')}`);
+      } else if (stats.docNames?.length) {
+        lines.push(`• Premier doc : **${stats.docNames[0]}**${stats.docsCount>1 ? ` (+${stats.docsCount-1} autres)` : ''}`);
+        lines.push(`Astuce : \`!doc status -v\` pour la liste.`);
+      }
+
+      return void message.reply(lines.join('\n'));
     }
 
     // !doc add (ingestion PDF)
@@ -438,14 +466,14 @@ Exigences :
         let answer = await callLLM(system, question, { max_tokens: 900, temperature: 0.35 });
         answer = sanitizeIfWorkout(answer);
         const out = answer + `\n\nSources: ${sources.map(s => `«${s}»`).join(', ')}`;
-        return out.length<=1900 ? message.reply(out) : (await message.reply("Réponse longue ▶"), sendInChunks(message.channel, out));
+        return out.length<=1900 ? message.reply(out) : (await message.reply("Réponse longue ▶️"), sendInChunks(message.channel, out));
       } catch (e) {
         console.error('!doc ask error', e);
         return void message.reply("Oups, recherche/raisonnement échoués.");
       }
     }
 
-    // !ask (générique, garde-fous)
+    // !ask (générique)
     if (content.toLowerCase().startsWith('!ask')) {
       markResponded(message.id);
       const remain = isOnCooldown(message.author.id);
@@ -471,7 +499,7 @@ Exigences :
       try {
         let answer = await callLLM(system, question, params);
         answer = sanitizeIfWorkout(answer);
-        return answer.length<=1900 ? message.reply(answer) : (await message.reply("Réponse longue ▶"), sendInChunks(message.channel, answer));
+        return answer.length<=1900 ? message.reply(answer) : (await message.reply("Réponse longue ▶️"), sendInChunks(message.channel, answer));
       } catch (err) {
         console.error('❌ Erreur Gemini:', err);
         return void message.reply("Oups, une erreur est survenue. Réessaie.");
@@ -491,42 +519,10 @@ Exigences :
   } catch (err) {
     console.error('❌ Erreur messageCreate:', err);
   }
-
-// --- !doc status -------------------------------------------------------------
-if (content.toLowerCase().startsWith('!doc status')) {
-  markResponded(message.id);
-  await message.channel.sendTyping();
-
-  // mode verbeux si "!doc status -v"
-  const verbose = /\s-v\b/i.test(content);
-
-  const stats = await getRagStats();
-  if (stats.error) {
-    return void message.reply(`❌ Impossible de lire le store RAG: ${stats.error}`);
-  }
-
-  const lines = [
-    `📚 **RAG store** : \`${stats.dataDir}\``,
-    `• Documents : **${stats.docsCount}**`,
-    `• Chunks indexés : **${stats.chunks}**`,
-    `• Taille totale (approx.) : **${stats.sizeMB} Mo**`,
-  ];
-
-  if (verbose && stats.docNames?.length) {
-    lines.push(`• Docs (max 20) :\n${stats.docNames.map((n,i)=>`  ${i+1}. ${n}`).join('\n')}`);
-  } else if (stats.docNames?.length) {
-    lines.push(`• Premier doc : **${stats.docNames[0]}**${stats.docsCount>1 ? ` (+${stats.docsCount-1} autres)` : ''}`);
-    lines.push(`Astuce : \`!doc status -v\` pour la liste.`);
-  }
-
-  return void message.reply(lines.join('\n'));
-}
-
 });
 
 // ============================== EXPRESS (WEB) ================================
-// Garde ce bloc SEULEMENT si ton service Railway est un "Web Service".
-// Si tu es en "Background Worker", commente/supprime ce bloc.
+// Garde ce bloc si ton service Railway est un "Web Service".
 const express = require('express');
 const app = express();
 
@@ -535,10 +531,25 @@ app.get('/', (_, res) => res.send('ok'));
 // --- Route de santé pour Gemini ---------------------------------------------
 app.get('/health/ai', async (_, res) => {
   try {
-    const out = await callLLM("Tu es un test. Réponds 'OK'.", "ping", { max_tokens: 5, temperature: 0.1 });
+    const out = await callLLM("Tu es un test. Réponds 'OK'.", "ping", { max_tokens: 5, temperature: 0.1, fallbackOK: true });
     res.json({ ok: true, reply: (out||'').trim() });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message || String(e) });
+  }
+});
+
+// --- Route HTTP admin : statut du store RAG ----------------------------------
+app.get('/admin/rag/status', async (req, res) => {
+  // Protection simple par token
+  if (process.env.ADMIN_TOKEN && req.query.token !== process.env.ADMIN_TOKEN) {
+    return res.status(401).json({ ok:false, error:'unauthorized' });
+  }
+  try {
+    const stats = await getRagStats();
+    if (stats.error) return res.status(500).json({ ok:false, error: stats.error });
+    res.json({ ok:true, ...stats });
+  } catch (e) {
+    res.status(500).json({ ok:false, error: e.message || String(e) });
   }
 });
 
@@ -551,3 +562,4 @@ process.on('uncaughtException', (e) => console.error('UNCAUGHT EXCEPTION:', e));
 
 // ================================= START =====================================
 client.login(process.env.DISCORD_BOT_TOKEN);
+
